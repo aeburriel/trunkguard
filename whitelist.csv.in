@@ -1,0 +1,17 @@
+# SOURCE MAC ADDRESS	DEVICE	VLAN	DESCRIPTION
+
+# Servers
+00:01:01:01:01:01	eth0	-	Server 1
+00:01:01:01:01:02	eth0		Server 2
+02:01:01:01:01:03	eth0	100	Server 3
+
+# Switches
+10:02:02:02:02:04	eth0
+10:02:02:02:02:05	eth1
+
+# Firewall
+10:02:02:02:02:ff	eth0	-	Firewall
+10:02:02:02:02:ff	eth0	100
+
+
+
