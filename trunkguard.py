@@ -221,6 +221,19 @@ class TrunkGuardContext:
             else:
                 self.descriptions[mac] = description
 
+    def analyzer(self, frame: EthernetParser):
+        """Process a frame
+
+        Args:
+            frame (EthernetParser): network frame to process
+        """
+        try:
+            self.checkFrameStatus(frame)
+        except UnauthorizedMAC as e:
+            alert(e)
+        except UntrackedVLAN as e:
+            alert(e)
+
     def checkFrameStatus(self, frame: EthernetParser):
         """Tests frame against whitelist and other rules
 
@@ -486,21 +499,6 @@ def alert(exception: TrunkGuardException):
     print(exception)
 
 
-def analyzer(frame: EthernetParser, context: TrunkGuardContext):
-    """Process a frame
-
-    Args:
-        frame (EthernetParser): network frame to process
-        context (TrunkGuardContext): internal context
-    """
-    try:
-        context.checkFrameStatus(frame)
-    except UnauthorizedMAC as e:
-        alert(e)
-    except UntrackedVLAN as e:
-        alert(e)
-
-
 def sniffer_loop(backlog: Queue, device: str):
     """Sniffing loop
 
@@ -521,7 +519,7 @@ def warden_loop(backlog: Queue, context: TrunkGuardContext):
     """
     while True:
         frame = backlog.get()
-        analyzer(frame, context)
+        context.analyzer(frame)
         backlog.task_done()
 
 
