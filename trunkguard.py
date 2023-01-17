@@ -34,7 +34,7 @@ from typing import Optional
 class EthernetParser:
     ETHERNET_ENDIANNESS = "big"
     MIN_SIZE_HEADER = 14
-    MIN_SIZE_VLAN_HEADER = 20
+    MIN_SIZE_VLAN_HEADER = 18
 
     def __init__(self, payload: bytes, device: str, timestamp: datetime):
         """Parses an Ethernet II or Ethernet 802.3 frame
