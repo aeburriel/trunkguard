@@ -188,6 +188,16 @@ class EthernetParser:
         """
         return self.dst[0] & 1 == 1
 
+    def key(self) -> bytes:
+        """Return a keyed representation of packet source
+
+        Returns:
+            bytes: binary representation of source MAC | VLAN | Device
+        """
+        vlan = b"\xff\xff" if self.vlan is None else self.vlan.to_bytes(
+            2, "big")
+        return self.src + vlan + self.device.encode("utf-8")
+
 
 class TrunkGuardContext:
     def __init__(self):
@@ -232,13 +242,13 @@ class TrunkGuardContext:
         Args:
             exception (MACTrunkGuardException): type of alert
         """
-        src = exception.frame.getSrc()
-        if src in self.aliens:
-            self.aliens[src] = self.aliens[src] + 1
+        key = exception.frame.key()
+        if key in self.aliens:
+            self.aliens[key] = self.aliens[key] + 1
         else:
             print(exception)
 
-            self.aliens[src] = 1
+            self.aliens[key] = 1
 
     def analyzer(self, frame: EthernetParser):
         """Process a frame
