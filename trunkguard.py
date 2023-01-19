@@ -20,12 +20,15 @@
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 
+from __future__ import annotations
+
 import csv
 import pcapy
 import re
 
 from collections import defaultdict
 from datetime import datetime, timezone
+from expiringdict import ExpiringDict
 from queue import Full, Queue
 from threading import Thread
 from typing import Optional
@@ -188,6 +191,8 @@ class EthernetParser:
 
 class TrunkGuardContext:
     def __init__(self):
+        # Discovered alien MAC addresses cache
+        self.aliens = ExpiringDict(max_len=32768, max_age_seconds=600)
         # Source device description indexed by MAC
         self.descriptions = {}
         # Devices to listen to
@@ -221,6 +226,20 @@ class TrunkGuardContext:
             else:
                 self.descriptions[mac] = description
 
+    def alertMAC(self, exception: MACTrunkGuardException):
+        """Emit an alert for a frame
+
+        Args:
+            exception (MACTrunkGuardException): type of alert
+        """
+        src = exception.frame.getSrc()
+        if src in self.aliens:
+            self.aliens[src] = self.aliens[src] + 1
+        else:
+            print(exception)
+
+            self.aliens[src] = 1
+
     def analyzer(self, frame: EthernetParser):
         """Process a frame
 
@@ -230,9 +249,9 @@ class TrunkGuardContext:
         try:
             self.checkFrameStatus(frame)
         except UnauthorizedMAC as e:
-            alert(e)
+            self.alertMAC(e)
         except UntrackedVLAN as e:
-            alert(e)
+            self.alertMAC(e)
 
     def checkFrameStatus(self, frame: EthernetParser):
         """Tests frame against whitelist and other rules
@@ -489,15 +508,6 @@ def ts2datetime(seconds: int, microseconds: int) -> datetime:
 
 
 # TrunkGuard Logic
-
-def alert(exception: TrunkGuardException):
-    """Emit an alert
-
-    Args:
-        exception (TrunkGuardException): type of alert
-    """
-    print(exception)
-
 
 def sniffer_loop(backlog: Queue, device: str):
     """Sniffing loop

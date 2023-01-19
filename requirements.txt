@@ -1,1 +1,2 @@
+expiringdict==1.2.2
 pcapy_ng==1.0.9
