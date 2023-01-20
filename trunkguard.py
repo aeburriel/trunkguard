@@ -583,7 +583,7 @@ if __name__ == "__main__":
     ]
 
     # Deploy processing worker
-    warden = Thread(target=warden_loop, args=(backlog, context))
+    warden = Thread(target=warden_loop, args=(backlog, context), daemon=True)
 
     # Start workers
     warden.start()
@@ -593,4 +593,4 @@ if __name__ == "__main__":
     # Wait for jobs
     for sniffer in sniffers:
         sniffer.join()
-    warden.join()
+    backlog.join()
