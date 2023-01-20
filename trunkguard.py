@@ -550,8 +550,13 @@ def sniffer_loop(backlog: Queue, device: str):
         backlog (Queue): pending frames queue
         device (str): capturing device name
     """
-    pcap = Sniffer(device, backlog)
-    pcap.start()
+    try:
+        pcap = Sniffer(device, backlog)
+        pcap.start()
+    except pcapy.PcapError as e:
+        print(f"Skipping deploying sniffer on interface {device}: {e}")
+    except TrunkGuardException as e:
+        print(f"Error: {e}")
 
 
 def warden_loop(backlog: Queue, context: TrunkGuardContext):
