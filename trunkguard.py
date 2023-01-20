@@ -30,6 +30,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from expiringdict import ExpiringDict
 from queue import Full, Queue
+from subprocess import call
 from threading import Thread
 from typing import Optional
 
@@ -247,6 +248,7 @@ class TrunkGuardContext:
             self.aliens[key] = self.aliens[key] + 1
         else:
             print(exception)
+            exception.notify("trunkguard-alert.sh")
 
             self.aliens[key] = 1
 
@@ -401,6 +403,28 @@ class MACTrunkGuardException(TrunkGuardException):
         self.frame = frame
 
         super().__init__(f"{self.__class__.__name__}: {self.frame}")
+
+    def notify(self, path: str) -> bool:
+        """Invoke the specified reporting program
+
+        Args:
+            path (str): path to executable
+
+        Returns:
+            bool: success status
+        """
+        try:
+            return call([
+                path,
+                self.__class__.__name__,
+                str(self.frame.getTimestamp()),
+                self.frame.getSrcStr(),
+                self.frame.getDevice(),
+                str(self.frame.getVLAN())
+            ]) == 0
+        except OSError as e:
+            print(f"Error invoking notification script: {e}")
+            return False
 
 
 class UnauthorizedMAC(MACTrunkGuardException):
