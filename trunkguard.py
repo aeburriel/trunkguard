@@ -25,10 +25,13 @@ from __future__ import annotations
 import csv
 import pcapy
 import re
+import sys
 
+from argparse import ArgumentParser, Namespace, FileType
 from collections import defaultdict
 from datetime import datetime, timezone
 from expiringdict import ExpiringDict
+from io import TextIOWrapper
 from queue import Full, Queue
 from subprocess import call
 from threading import Thread
@@ -201,13 +204,15 @@ class EthernetParser:
 
 
 class TrunkGuardContext:
-    def __init__(self):
+    def __init__(self, args: Namespace):
         # Discovered alien MAC addresses cache
-        self.aliens = ExpiringDict(max_len=32768, max_age_seconds=600)
+        self.aliens = ExpiringDict(
+            max_len=args.aliens, max_age_seconds=args.ttl)
         # Source device description indexed by MAC
         self.descriptions = {}
         # Devices to listen to
         self.devices = set()
+        self.errors = args.Wall
         # Whitelisted MAC set indexed by device and vlan
         self.macs = defaultdict(lambda: defaultdict(set))
 
@@ -225,15 +230,17 @@ class TrunkGuardContext:
         self.devices.add(device)
 
         if mac in self.macs[device][vlan]:
-            print(f"WARNING: duplicated MAC {mac2str(mac)} "
-                  f"for device {device} and VLAN {vlan}")
+            msg = (f"WARNING: duplicated MAC {mac2str(mac)} "
+                   f"for device {device} and VLAN {vlan}")
+            warningMessage(msg, self.errors)
         else:
             self.macs[device][vlan].add(mac)
 
         if description is not None:
             if mac in self.descriptions.keys():
-                print(f"WARNING: ignoring duplicated description "
-                      f"'{description}' for MAC {mac2str(mac)}")
+                msg = (f"WARNING: ignoring duplicated description "
+                       f"'{description}' for MAC {mac2str(mac)}")
+                warningMessage(msg, self.errors)
             else:
                 self.descriptions[mac] = description
 
@@ -309,35 +316,50 @@ class TrunkGuardContext:
             ValueError: missing device name
         """
         with open(filename, "rt", newline="") as csvfile:
-            reader = csv.reader(csvfile, delimiter="\t",
-                                quoting=csv.QUOTE_NONE,
-                                skipinitialspace=True, strict=True)
-            for row in reader:
-                if len(row) == 0 or row[0].startswith("#"):
-                    # Skip empty lines & commented lines
-                    continue
-                elif len(row) < 4:
-                    # Exend row to all required fields
-                    row += [""] * (4 - len(row))
+            return self.loadWhitelistIO(csvfile)
 
-                try:
-                    mac = str2mac(row[0])
-                    if mac is None:
-                        raise ValueError(f"MAC address is mandatory "
-                                         f"at line {reader.line_num}")
-                    dev = row[1]
-                    if len(dev) == 0:
-                        raise ValueError(f"Device name is mandatory "
-                                         f"at line {reader.line_num}")
-                    vlan = str2int(row[2])
-                    comment = row[3] if len(row[3]) > 0 else None
+    def loadWhitelistIO(self, csvfile: TextIOWrapper):
+        """Load a MAC addresses whitelisting CSV file
 
-                    self.addMAC(mac, dev, vlan, comment)
-                except IndexError:
-                    print(f"Wrong number of columns. Skipping row "
-                          f"at line {reader.line_num} '{row}'")
-                except ValueError as e:
-                    print(f"Incorrect value at line {reader.line_num}: {e}")
+        Args:
+            csvfile (TextIOWrapper): CSV reader object
+
+        Raises:
+            ValueError: missing MAC address
+            ValueError: missing device name
+        """
+        reader = csv.reader(csvfile, delimiter="\t",
+                            quoting=csv.QUOTE_NONE,
+                            skipinitialspace=True, strict=True)
+        for row in reader:
+            if len(row) == 0 or row[0].startswith("#"):
+                # Skip empty lines & commented lines
+                continue
+            elif len(row) < 4:
+                # Exend row to all required fields
+                row += [""] * (4 - len(row))
+
+            try:
+                mac = str2mac(row[0])
+                if mac is None:
+                    raise ValueError(f"MAC address is mandatory "
+                                     f"at line {reader.line_num}")
+                dev = row[1]
+                if len(dev) == 0:
+                    raise ValueError(f"Device name is mandatory "
+                                     f"at line {reader.line_num}")
+                vlan = str2int(row[2])
+                comment = row[3] if len(row[3]) > 0 else None
+
+                self.addMAC(mac, dev, vlan, comment)
+            except IndexError:
+                msg = (f"Wrong number of columns "
+                       f"at line {reader.line_num} '{row}'")
+                warningMessage(msg, self.errors)
+            except ValueError as e:
+                msg = (f"Incorrect value "
+                       f"at line {reader.line_num}: {e}")
+                warningMessage(msg, self.errors)
 
 
 class Sniffer:
@@ -541,6 +563,22 @@ def ts2datetime(seconds: int, microseconds: int) -> datetime:
                                   tz=timezone.utc)
 
 
+def warningMessage(message: str, errors: bool):
+    """Prints a warning message or raises a ValueError exception
+
+    Args:
+        message (str): description of error
+        errors (bool): True if warnings have to be treated as errors
+
+    Raises:
+        ValueError: Exception when warnings are treated as errors
+    """
+    if errors:
+        raise ValueError(message)
+    else:
+        print(message)
+
+
 # TrunkGuard Logic
 
 def sniffer_loop(backlog: Queue, device: str):
@@ -575,11 +613,44 @@ def warden_loop(backlog: Queue, context: TrunkGuardContext):
 # TrunkGuard Main Program
 
 if __name__ == "__main__":
-    context = TrunkGuardContext()
-    context.loadWhitelist("whitelist.csv")
+    parser = ArgumentParser(
+        description=("Ethernet Trunk Guard: "
+                     "watches network for traffic that shouldn't be there."),
+        epilog=("For more information see the project homepage: "
+                "https://github.com/aeburriel/trunkguard")
+    )
+    parser.add_argument("whitelist", nargs="+",
+                        type=FileType("rt"), help="whitelist CSV files")
+    parser.add_argument("-s", "--script", type=str,
+                        default="trunkguard-alert.sh",
+                        help=("notification script path. "
+                              "Defaults to %(default)s"))
+    parser.add_argument("-t", "--ttl", type=int, default=600,
+                        help=("aliens cache TTL. "
+                              "Defaults to %(default)s seconds"))
+    parser.add_argument("-a", "--aliens", type=int, default=32768,
+                        help=("aliens cache size. "
+                              "Defaults to %(default)s entries"))
+    parser.add_argument("-b", "--backlog", type=int, default=1000,
+                        help=("backlog queue size. "
+                              "Defaults to %(default)s elements"))
+    parser.add_argument("-W", "--Wall", action="store_true",
+                        help=("treat all warnings as errors. "
+                              "Defaults to %(default)s"))
+    args = parser.parse_args()
+
+    context = TrunkGuardContext(args)
+    for file in args.whitelist:
+        print(f"Loading '{file.name}' whitelist")
+        try:
+            with file as f:
+                context.loadWhitelistIO(f)
+        except ValueError as e:
+            print(e)
+            sys.exit(1)
 
     # Backlog queue
-    backlog = Queue(maxsize=1000)
+    backlog = Queue(maxsize=args.backlog)
 
     # Deploy sniffer workers
     sniffers = [
