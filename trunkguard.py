@@ -23,8 +23,10 @@
 from __future__ import annotations
 
 import csv
+import daemon
 import pcapy
 import re
+import signal
 import sys
 
 from argparse import ArgumentParser, Namespace, FileType
@@ -32,6 +34,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from expiringdict import ExpiringDict
 from io import TextIOWrapper
+from lockfile import FileLock
 from queue import Full, Queue
 from subprocess import call
 from threading import Thread
@@ -612,9 +615,40 @@ def warden_loop(backlog: Queue, context: TrunkGuardContext):
         backlog.task_done()
 
 
+def trunkguard_deploy(context: TrunkGuardContext, commandline: Namespace):
+    """Launch Trunk Guard
+
+    Args:
+        context (TrunkGuardContext): internal context
+        commandline (Namespace): command-line options
+    """
+    # Backlog queue
+    backlog = Queue(maxsize=commandline.backlog)
+
+    # Deploy sniffer workers
+    sniffers = [
+        Thread(target=sniffer_loop, args=(backlog, device), daemon=True)
+        for device in context.getDevices()
+    ]
+
+    # Deploy processing worker
+    warden = Thread(target=warden_loop, args=(backlog, context), daemon=True)
+
+    # Start workers
+    warden.start()
+    for sniffer in sniffers:
+        sniffer.start()
+
+    # Wait for jobs
+    for sniffer in sniffers:
+        sniffer.join()
+    backlog.join()
+
+
 # TrunkGuard Main Program
 
 if __name__ == "__main__":
+    # Parse command-line options
     parser = ArgumentParser(
         description=("Ethernet Trunk Guard: "
                      "watches network for traffic that shouldn't be there."),
@@ -637,39 +671,42 @@ if __name__ == "__main__":
     parser.add_argument("-b", "--backlog", type=int, default=1000,
                         help=("backlog queue size. "
                               "Defaults to %(default)s elements"))
+    parser.add_argument("-n", "--no-detatch", action="store_true",
+                        help=("do not detach process from console. "
+                              "Defaults to %(default)s"))
+    parser.add_argument("-p", "--pid", type=str,
+                        default="/var/run/trunkguard.pid",
+                        help=("PID lock file. "
+                              "Defaults to %(default)s"))
     parser.add_argument("-W", "--Wall", action="store_true",
                         help=("treat all warnings as errors. "
                               "Defaults to %(default)s"))
     args = parser.parse_args()
 
-    context = TrunkGuardContext(args)
+    # Load whitelists
+    tgcontext = TrunkGuardContext(args)
     for file in args.whitelist:
         print(f"Loading '{file.name}' whitelist")
         try:
             with file as f:
-                context.loadWhitelistIO(f)
+                tgcontext.loadWhitelistIO(f)
         except ValueError as e:
             print(e)
             sys.exit(1)
 
-    # Backlog queue
-    backlog = Queue(maxsize=args.backlog)
+    # Launch TrunkGuad
+    if args.no_detatch:
+        trunkguard_deploy(args)
+    else:
+        dcontext = daemon.DaemonContext(
+            pidfile=FileLock(args.pid),
+            prevent_core=True,
+            umask=0o022
+        )
 
-    # Deploy sniffer workers
-    sniffers = [
-        Thread(target=sniffer_loop, args=(backlog, device))
-        for device in context.getDevices()
-    ]
+        dcontext.signal_map = {
+            signal.SIGTERM: "terminate"
+        }
 
-    # Deploy processing worker
-    warden = Thread(target=warden_loop, args=(backlog, context), daemon=True)
-
-    # Start workers
-    warden.start()
-    for sniffer in sniffers:
-        sniffer.start()
-
-    # Wait for jobs
-    for sniffer in sniffers:
-        sniffer.join()
-    backlog.join()
+        with dcontext:
+            trunkguard_deploy(tgcontext, args)

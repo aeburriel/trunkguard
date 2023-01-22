@@ -1,2 +1,3 @@
 expiringdict==1.2.2
 pcapy_ng==1.0.9
+python-daemon==2.3.2
