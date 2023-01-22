@@ -647,8 +647,12 @@ def trunkguard_deploy(context: TrunkGuardContext, commandline: Namespace):
 
 # TrunkGuard Main Program
 
-if __name__ == "__main__":
-    # Parse command-line options
+def parseRuntimeParameters() -> Namespace:
+    """Parse command-line options
+
+    Returns:
+        Namespace: parsed parameters
+    """
     parser = ArgumentParser(
         description=("Ethernet Trunk Guard: "
                      "watches network for traffic that shouldn't be there."),
@@ -681,7 +685,11 @@ if __name__ == "__main__":
     parser.add_argument("-W", "--Wall", action="store_true",
                         help=("treat all warnings as errors. "
                               "Defaults to %(default)s"))
-    args = parser.parse_args()
+    return parser.parse_args()
+
+
+if __name__ == "__main__":
+    args = parseRuntimeParameters()
 
     # Load whitelists
     tgcontext = TrunkGuardContext(args)
