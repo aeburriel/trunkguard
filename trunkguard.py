@@ -316,7 +316,8 @@ class TrunkGuardContext:
             ValueError: missing MAC address
             ValueError: missing device name
         """
-        with open(filename, "rt", newline="") as csvfile:
+        with open(filename, "rt", encoding="utf-8",
+                  newline="") as csvfile:
             return self.loadWhitelistIO(csvfile)
 
     def loadWhitelistIO(self, csvfile: TextIOWrapper):
@@ -621,7 +622,8 @@ if __name__ == "__main__":
                 "https://github.com/aeburriel/trunkguard")
     )
     parser.add_argument("whitelist", nargs="+",
-                        type=FileType("rt"), help="whitelist CSV files")
+                        type=FileType("rt", encoding="utf-8"),
+                        help="whitelist CSV files")
     parser.add_argument("-s", "--script", type=str,
                         default="trunkguard-alert.sh",
                         help=("notification script path. "
