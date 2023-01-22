@@ -212,6 +212,7 @@ class TrunkGuardContext:
         self.descriptions = {}
         # Devices to listen to
         self.devices = set()
+        # Whether to treat warnings as errors
         self.errors = args.Wall
         # Whitelisted MAC set indexed by device and vlan
         self.macs = defaultdict(lambda: defaultdict(set))
