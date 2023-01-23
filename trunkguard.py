@@ -704,7 +704,7 @@ if __name__ == "__main__":
 
     # Launch TrunkGuad
     if args.no_detatch:
-        trunkguard_deploy(args)
+        trunkguard_deploy(tgcontext, args)
     else:
         dcontext = daemon.DaemonContext(
             pidfile=FileLock(args.pid),
