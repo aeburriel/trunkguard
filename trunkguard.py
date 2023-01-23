@@ -28,6 +28,7 @@ import pcapy
 import re
 import signal
 import sys
+import syslog
 
 from argparse import ArgumentParser, Namespace, FileType
 from collections import defaultdict
@@ -211,6 +212,8 @@ class TrunkGuardContext:
         # Discovered alien MAC addresses cache
         self.aliens = ExpiringDict(
             max_len=args.aliens, max_age_seconds=args.ttl)
+        # Whether running on background or foreground
+        self.foreground = args.no_detatch
         # Source device description indexed by MAC
         self.descriptions = {}
         # Devices to listen to
@@ -236,7 +239,7 @@ class TrunkGuardContext:
         if mac in self.macs[device][vlan]:
             msg = (f"WARNING: duplicated MAC {mac2str(mac)} "
                    f"for device {device} and VLAN {vlan}")
-            warningMessage(msg, self.errors)
+            warningMessage(msg, self.errors, self.foreground)
         else:
             self.macs[device][vlan].add(mac)
 
@@ -244,7 +247,7 @@ class TrunkGuardContext:
             if mac in self.descriptions.keys():
                 msg = (f"WARNING: ignoring duplicated description "
                        f"'{description}' for MAC {mac2str(mac)}")
-                warningMessage(msg, self.errors)
+                warningMessage(msg, self.errors, self.foreground)
             else:
                 self.descriptions[mac] = description
 
@@ -258,7 +261,7 @@ class TrunkGuardContext:
         if key in self.aliens:
             self.aliens[key] = self.aliens[key] + 1
         else:
-            print(exception)
+            logger(str(exception), syslog.LOG_WARNING, self.foreground)
             exception.notify("trunkguard-alert.sh")
 
             self.aliens[key] = 1
@@ -360,11 +363,11 @@ class TrunkGuardContext:
             except IndexError:
                 msg = (f"Wrong number of columns "
                        f"at line {reader.line_num} '{row}'")
-                warningMessage(msg, self.errors)
+                warningMessage(msg, self.errors, self.foreground)
             except ValueError as e:
                 msg = (f"Incorrect value "
                        f"at line {reader.line_num}: {e}")
-                warningMessage(msg, self.errors)
+                warningMessage(msg, self.errors, self.foreground)
 
 
 class Sniffer:
@@ -389,7 +392,7 @@ class Sniffer:
 
         self.backlog = backlog
 
-        print(f"Listening on device {device}")
+        logger(f"Listening on device {device}", syslog.LOG_NOTICE)
 
     def close(self):
         """Close the capturing device
@@ -411,7 +414,7 @@ class Sniffer:
         try:
             self.backlog.put(frame)
         except Full:
-            print("Backlog queue full, discarding datagram")
+            logger("Backlog queue full, discarding datagram", syslog.LOG_ERR)
 
     def start(self):
         """Start capturing loop
@@ -450,7 +453,7 @@ class MACTrunkGuardException(TrunkGuardException):
                 str(self.frame.getVLAN())
             ]) == 0
         except OSError as e:
-            print(f"Error invoking notification script: {e}")
+            logger(f"Error invoking notification script: {e}", syslog.LOG_ERR)
             return False
 
 
@@ -482,6 +485,20 @@ def getEtherType(ets: int) -> Optional[int]:
         Optional[int]: EtherType or None if value is a 802.3 size field
     """
     return ets if ets >= 1536 else None
+
+
+def logger(message: str, priority: int, console: Optional[bool] = True):
+    """Log a message
+
+    Args:
+        message (str): message to log
+        priority (int): syslog priority
+        console (Optional[bool], optional): output the message to stdout
+                                            Defaults to True.
+    """
+    if console:
+        print(message)
+    syslog.syslog(priority, message)
 
 
 def mac2str(mac: bytes) -> str:
@@ -568,12 +585,15 @@ def ts2datetime(seconds: int, microseconds: int) -> datetime:
                                   tz=timezone.utc)
 
 
-def warningMessage(message: str, errors: bool):
+def warningMessage(message: str, errors: bool,
+                   console: Optional[bool] = True):
     """Prints a warning message or raises a ValueError exception
 
     Args:
         message (str): description of error
         errors (bool): True if warnings have to be treated as errors
+        console (Optional[bool], optional): output the message to stdout
+                                            Defaults to True.
 
     Raises:
         ValueError: Exception when warnings are treated as errors
@@ -581,7 +601,7 @@ def warningMessage(message: str, errors: bool):
     if errors:
         raise ValueError(message)
     else:
-        print(message)
+        logger(message, syslog.LOG_WARNING, console)
 
 
 # TrunkGuard Logic
@@ -597,9 +617,10 @@ def sniffer_loop(backlog: Queue, device: str):
         pcap = Sniffer(device, backlog)
         pcap.start()
     except pcapy.PcapError as e:
-        print(f"Skipping deploying sniffer on interface {device}: {e}")
+        logger(f"Skipping deploying sniffer "
+               f"on interface {device}: {e}", syslog.LOG_ERR)
     except TrunkGuardException as e:
-        print(f"Error: {e}")
+        logger(f"Error: {e}", syslog.LOG_ERR)
 
 
 def warden_loop(backlog: Queue, context: TrunkGuardContext):
@@ -622,6 +643,9 @@ def trunkguard_deploy(context: TrunkGuardContext, commandline: Namespace):
         context (TrunkGuardContext): internal context
         commandline (Namespace): command-line options
     """
+    # Open logging
+    syslog.openlog(facility=syslog.LOG_DAEMON)
+
     # Backlog queue
     backlog = Queue(maxsize=commandline.backlog)
 
@@ -643,6 +667,9 @@ def trunkguard_deploy(context: TrunkGuardContext, commandline: Namespace):
     for sniffer in sniffers:
         sniffer.join()
     backlog.join()
+
+    # Close logging
+    syslog.closelog()
 
 
 # TrunkGuard Main Program
@@ -694,12 +721,12 @@ if __name__ == "__main__":
     # Load whitelists
     tgcontext = TrunkGuardContext(args)
     for file in args.whitelist:
-        print(f"Loading '{file.name}' whitelist")
+        logger(f"Loading '{file.name}' whitelist", syslog.LOG_NOTICE)
         try:
             with file as f:
                 tgcontext.loadWhitelistIO(f)
         except ValueError as e:
-            print(e)
+            logger(str(e), syslog.LOG_ERR)
             sys.exit(1)
 
     # Launch TrunkGuad
