@@ -36,6 +36,7 @@ from datetime import datetime, timezone
 from expiringdict import ExpiringDict
 from io import TextIOWrapper
 from lockfile import FileLock
+from mac_vendor_lookup import MacLookup, OUI_URL, VendorNotFoundError
 from queue import Full, Queue
 from subprocess import call
 from threading import Thread
@@ -46,6 +47,9 @@ class EthernetParser:
     ETHERNET_ENDIANNESS = "big"
     MIN_SIZE_HEADER = 14
     MIN_SIZE_VLAN_HEADER = 18
+
+    # Ethernet OUI to vendor lookup
+    macOUIs = MacLookup()
 
     def __init__(self, payload: bytes, device: str, timestamp: datetime):
         """Parses an Ethernet II or Ethernet 802.3 frame
@@ -145,6 +149,28 @@ class EthernetParser:
             str: hex str representation
         """
         return mac2str(self.src)
+
+    @classmethod
+    def mac2vendor(cls, mac: str) -> str:
+        """Return the vendor of the specified MAC address
+
+        Args:
+            mac (str): address to query
+
+        Returns:
+            str: vendor name or empty string if unknown
+        """
+        try:
+            return cls.macOUIs.lookup(mac)
+        except VendorNotFoundError:
+            return ""
+
+    @classmethod
+    def mac2vendorUpdate(cls):
+        """Try to update MAC vendors database
+        Opens a HTTPS connection to Internet
+        """
+        cls.macOUIs.update_vendors()
 
     def getTimestamp(self) -> datetime:
         """Return capturing timestamp
@@ -443,14 +469,16 @@ class MACTrunkGuardException(TrunkGuardException):
         Returns:
             bool: success status
         """
+        mac = self.frame.getSrcStr()
         try:
             return call([
                 path,
                 self.__class__.__name__,
                 str(self.frame.getTimestamp()),
-                self.frame.getSrcStr(),
+                mac,
                 self.frame.getDevice(),
-                str(self.frame.getVLAN())
+                str(self.frame.getVLAN()),
+                self.frame.mac2vendor(mac)
             ]) == 0
         except OSError as e:
             logger(f"Error invoking notification script: {e}", syslog.LOG_ERR)
@@ -709,6 +737,10 @@ def parseRuntimeParameters() -> Namespace:
                         default="/var/run/trunkguard.pid",
                         help=("PID lock file. "
                               "Defaults to %(default)s"))
+    parser.add_argument("-r", "--refresh", action="store_true",
+                        help=("Try to update MAC vendors database. "
+                              f"Requires Internet conection to {OUI_URL}. "
+                              "Defaults to %(default)s"))
     parser.add_argument("-W", "--Wall", action="store_true",
                         help=("treat all warnings as errors. "
                               "Defaults to %(default)s"))
@@ -717,6 +749,11 @@ def parseRuntimeParameters() -> Namespace:
 
 if __name__ == "__main__":
     args = parseRuntimeParameters()
+
+    if args.refresh:
+        # Update MAC vendors database
+        logger("Syncing MAC vendor database", syslog.LOG_NOTICE)
+        EthernetParser.mac2vendorUpdate()
 
     # Load whitelists
     tgcontext = TrunkGuardContext(args)
